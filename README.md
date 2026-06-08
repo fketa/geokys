@@ -1,0 +1,2 @@
+# geokys
+hotkeys for geoduels
