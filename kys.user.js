@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         geokys
 // @namespace    local.geoduels.hotkeys
-// @version      0.3.2
+// @version      0.4.0
 // @description  Adds configurable local hotkeys for GeoDuels map, chat, mute, invite copying, and utility actions.
 // @author       fketa
 // @match        https://geoduels.io/*
@@ -18,6 +18,8 @@
   var LAST_LOBBY_CODE_KEY = "geoduels.hotkeys.lastLobbyCode.v1";
   var CUSTOM_PFP_STORAGE_KEY = "geoduels.customProfilePicture.v1";
   var ROOT_ID = "geoduels-hotkeys-root";
+  var INTEGRATED_TAB_ID = "geoduels-hotkeys-site-tab";
+  var INTEGRATED_PANEL_ID = "geoduels-hotkeys-site-panel";
   var FILE_INPUT_ID = "geoduels-hotkeys-ball-image-input";
   var MAP_PANEL_ATTR = "data-geoduels-hotkeys-map-panel";
   var MAP_FRAME_ATTR = "data-geoduels-hotkeys-map-frame";
@@ -66,8 +68,8 @@
   var ACTIONS = [
     {
       id: "settings",
-      label: "Hotkey panel",
-      hint: "Open or close this userscript panel.",
+      label: "Keybinds menu",
+      hint: "Open or close the KEYBINDS menu.",
       run: togglePanel
     },
     {
@@ -245,6 +247,8 @@
   var muteEnforcer = 0;
   var domObserver = null;
   var gameVisibilityTimer = 0;
+  var integratedSyncTimer = 0;
+  var integratedTabActive = false;
   var launcherHiddenForGame = false;
 
   window.__geoduelsHotkeys = {
@@ -278,9 +282,14 @@
       showToast("Ball image reset");
     },
     openPanel: function () {
-      setPanelOpen(true);
+      if (!launcherHiddenForGame && findLobbyTabContainer()) {
+        setIntegratedTabActive(true);
+      } else {
+        setPanelOpen(true);
+      }
     },
     closePanel: function () {
+      if (integratedTabActive) setIntegratedTabActive(false, true);
       setPanelOpen(false);
     }
   };
@@ -401,11 +410,26 @@
       history[method] = function () {
         var result = original.apply(this, arguments);
         queueGameVisibilityUpdate();
+        queueIntegratedTabSync();
         return result;
       };
     });
-    window.addEventListener("popstate", queueGameVisibilityUpdate, true);
-    window.addEventListener("hashchange", queueGameVisibilityUpdate, true);
+    window.addEventListener(
+      "popstate",
+      function () {
+        queueGameVisibilityUpdate();
+        queueIntegratedTabSync();
+      },
+      true
+    );
+    window.addEventListener(
+      "hashchange",
+      function () {
+        queueGameVisibilityUpdate();
+        queueIntegratedTabSync();
+      },
+      true
+    );
   }
 
   function queueGameVisibilityUpdate() {
@@ -426,6 +450,9 @@
     if (launcherHiddenForGame && settings.panelOpen) {
       settings.panelOpen = false;
       saveSettings();
+    }
+    if (launcherHiddenForGame && integratedTabActive) {
+      setIntegratedTabActive(false, true);
     }
     refreshPanel();
   }
@@ -591,6 +618,7 @@
     applyMuteState(false);
     setMapOpen(settings.mapOpen, true);
     setPanelOpen(settings.panelOpen, true);
+    syncIntegratedHotkeysTab();
     updateGameVisibility();
     window.addEventListener("resize", function () {
       settings.ballPosition = clampBallPosition(settings.ballPosition);
@@ -602,6 +630,7 @@
       domObserver = new MutationObserver(function () {
         if (settings.mapOpen) markMinimap();
         queueGameVisibilityUpdate();
+        queueIntegratedTabSync();
       });
       domObserver.observe(document.body, { childList: true, subtree: true });
       domObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
@@ -655,9 +684,358 @@
       ".geoduels-hotkeys-toast[data-error='true'] { background: #ffb7b7; color: #300; }",
       "html.geoduels-hotkeys-map-open [" + MAP_PANEL_ATTR + "] { width: min(90vw, 800px) !important; height: min(52vh, 560px) !important; right: 16px !important; z-index: 2147483000 !important; }",
       "html.geoduels-hotkeys-map-open [" + MAP_FRAME_ATTR + "] { height: min(52vh, 560px) !important; min-height: 280px !important; opacity: 1 !important; box-shadow: 0 24px 60px rgba(0,0,0,.45) !important; }",
-      "@media (max-width: 767px) { .geoduels-hotkeys-panel { left: 0; top: 82px; width: min(510px, calc(100vw - 12px)); } .geoduels-hotkeys-toast { left: 0; top: 82px; } .geoduels-hotkeys-row { grid-template-columns: minmax(0, 1fr) 96px 50px; } html.geoduels-hotkeys-map-open [" + MAP_PANEL_ATTR + "] { right: 12px !important; width: calc(100vw - 24px) !important; height: 58vh !important; } html.geoduels-hotkeys-map-open [" + MAP_FRAME_ATTR + "] { height: 50vh !important; min-height: 300px !important; } }"
+      "@media (max-width: 767px) { .geoduels-hotkeys-panel { left: 0; top: 82px; width: min(510px, calc(100vw - 12px)); } .geoduels-hotkeys-toast { left: 0; top: 82px; } .geoduels-hotkeys-row { grid-template-columns: minmax(0, 1fr) 96px 50px; } html.geoduels-hotkeys-map-open [" + MAP_PANEL_ATTR + "] { right: 12px !important; width: calc(100vw - 24px) !important; height: 58vh !important; } html.geoduels-hotkeys-map-open [" + MAP_FRAME_ATTR + "] { height: 50vh !important; min-height: 300px !important; } }",
+      "#" + ROOT_ID + " { color: #e7f3ff; font: 13px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }",
+      "#" + ROOT_ID + " button { border-radius: 8px; letter-spacing: 0; }",
+      "#" + ROOT_ID + "[data-integrated-available='true'] .geoduels-hotkeys-ball { opacity: .3; transform: scale(.82); }",
+      "#" + ROOT_ID + "[data-integrated-available='true'] .geoduels-hotkeys-ball:hover { opacity: 1; }",
+      ".geoduels-hotkeys-ball { width: 58px; height: 58px; border: 1px solid rgba(255,255,255,.2); background: rgba(13,18,24,.86); box-shadow: 0 16px 36px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.15); transition: opacity .16s ease, transform .16s ease, box-shadow .16s ease; }",
+      ".geoduels-hotkeys-ball:active { box-shadow: 0 9px 22px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.12); transform: scale(.97); }",
+      ".geoduels-hotkeys-ball[data-active='true'] { outline: 2px solid rgba(55,232,143,.76); outline-offset: 3px; }",
+      ".geoduels-hotkeys-ball-image { inset: 2px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.32); }",
+      ".geoduels-hotkeys-ball-label { display: none; }",
+      ".geoduels-hotkeys-panel { width: min(520px, calc(100vw - 112px)); border: 1px solid rgba(255,255,255,.14); border-radius: 18px; background: linear-gradient(180deg, rgba(22,33,46,.94), rgba(9,15,22,.96)); color: #e7f3ff; box-shadow: 0 28px 70px rgba(0,0,0,.48), inset 0 1px 0 rgba(255,255,255,.08); transform: none; backdrop-filter: blur(18px); }",
+      ".geoduels-hotkeys-panel::before { inset: 43px 0 0; background-image: linear-gradient(rgba(9,15,22,.9), rgba(9,15,22,.94)), var(--geoduels-hotkeys-menu-image); background-size: cover; background-position: center; background-repeat: no-repeat; opacity: .22; }",
+      "#" + ROOT_ID + "[data-edge='right'] .geoduels-hotkeys-panel { transform: none; }",
+      ".geoduels-hotkeys-titlebar { min-height: 42px; padding: 10px 10px 10px 14px; border-bottom: 1px solid rgba(255,255,255,.1); background: rgba(5,10,17,.64); color: #f6fbff; text-transform: uppercase; letter-spacing: .14em; }",
+      ".geoduels-hotkeys-window-button { width: 32px; height: 28px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: rgba(255,255,255,.08); color: #cfe4f6; box-shadow: none; }",
+      ".geoduels-hotkeys-body { padding: 14px; max-height: calc(min(700px, calc(100vh - 24px)) - 43px); }",
+      ".geoduels-hotkeys-group { margin: 0 0 12px; padding: 14px; border: 1px solid rgba(255,255,255,.1); border-radius: 14px; background: rgba(255,255,255,.045); }",
+      ".geoduels-hotkeys-group:nth-child(2) { background: rgba(255,255,255,.045); }",
+      ".geoduels-hotkeys-group-title { margin-bottom: 8px; color: #f8fbff; font-size: 14px; font-weight: 800; letter-spacing: .1em; text-decoration: none; text-transform: uppercase; }",
+      ".geoduels-hotkeys-note { display: block; color: rgba(219,236,250,.68); font-size: 12px; line-height: 1.35; }",
+      ".geoduels-hotkeys-row { grid-template-columns: minmax(0, 1fr) 118px 58px; gap: 8px; margin: 0 0 8px; padding: 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; background: rgba(255,255,255,.055); }",
+      ".geoduels-hotkeys-row:nth-child(odd) { background: rgba(255,255,255,.04); }",
+      ".geoduels-hotkeys-label b { color: #f5faff; font-size: 13px; line-height: 1.2; }",
+      ".geoduels-hotkeys-label small { color: rgba(216,234,248,.64); font-size: 11px; line-height: 1.3; }",
+      ".geoduels-hotkeys-bind, .geoduels-hotkeys-clear, .geoduels-hotkeys-reset, .geoduels-hotkeys-file-button { min-height: 30px; border: 1px solid rgba(255,255,255,.13); border-radius: 8px; background: rgba(255,255,255,.08); color: #edf7ff; box-shadow: none; font-weight: 700; }",
+      ".geoduels-hotkeys-bind:hover, .geoduels-hotkeys-clear:hover, .geoduels-hotkeys-reset:hover, .geoduels-hotkeys-file-button:hover, .geoduels-hotkeys-window-button:hover { background: rgba(255,255,255,.14); }",
+      ".geoduels-hotkeys-bind:active, .geoduels-hotkeys-clear:active, .geoduels-hotkeys-reset:active, .geoduels-hotkeys-file-button:active, .geoduels-hotkeys-window-button:active { transform: translateY(1px); box-shadow: none; }",
+      ".geoduels-hotkeys-bind { min-width: 112px; background: linear-gradient(180deg, rgba(48,170,117,.88), rgba(24,132,86,.88)); color: #f6fff8; }",
+      ".geoduels-hotkeys-bind[data-recording='true'] { background: linear-gradient(180deg, rgba(246,176,72,.95), rgba(214,122,32,.95)); color: #1b1002; outline: 2px solid rgba(255,255,255,.48); outline-offset: 2px; }",
+      ".geoduels-hotkeys-clear { background: rgba(255,255,255,.06); color: rgba(232,242,251,.82); }",
+      ".geoduels-hotkeys-reset, .geoduels-hotkeys-file-button { background: rgba(255,255,255,.09); }",
+      ".geoduels-hotkeys-toast { border: 1px solid rgba(255,255,255,.14); border-radius: 12px; background: rgba(14,22,32,.96); color: #edf7ff; box-shadow: 0 18px 44px rgba(0,0,0,.42); transform: translateY(8px); transition: opacity .16s ease, transform .16s ease; }",
+      ".geoduels-hotkeys-toast[data-error='true'] { background: rgba(69,18,25,.96); color: #ffe8ec; }",
+      ".geoduels-hotkeys-tabs-expanded { max-width: 560px !important; }",
+      "html.geoduels-hotkeys-integrated-active .geoduels-hotkeys-tabs-expanded > button:not(#" + INTEGRATED_TAB_ID + ") { color: #a9bfd4 !important; opacity: .4 !important; text-shadow: none !important; }",
+      ".geoduels-hotkeys-site-tab { position: absolute; left: 50%; top: 0; display: inline-flex; height: 36px; min-width: 110px; align-items: center; justify-content: center; padding: 0 12px; border: 0; background: transparent; color: rgba(214,229,242,.66); font: inherit; font-size: 15px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; opacity: .86; transform: translateX(208px) scale(.95); transition: color .16s ease, opacity .16s ease, transform .16s ease, text-shadow .16s ease; cursor: pointer; z-index: 5; }",
+      ".geoduels-hotkeys-site-tab:hover { color: #fff; opacity: 1; }",
+      ".geoduels-hotkeys-site-tab[data-active='true'] { color: #fff; opacity: 1; text-shadow: 0 0 18px rgba(70,232,149,.5); transform: translateX(208px) scale(1.03); }",
+      ".geoduels-hotkeys-site-panel { pointer-events: auto; width: min(100%, 1180px); margin: 0 auto; color: #e7f3ff; }",
+      ".geoduels-hotkeys-site-card { position: relative; border: 1px solid rgba(255,255,255,.1); border-radius: 22px; background: linear-gradient(180deg, rgba(21,31,45,.86), rgba(8,14,22,.92)); box-shadow: 0 28px 80px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.07); overflow: hidden; backdrop-filter: blur(18px); }",
+      ".geoduels-hotkeys-site-card::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(rgba(8,14,22,.88), rgba(8,14,22,.94)), var(--geoduels-hotkeys-menu-image); background-size: cover; background-position: center; opacity: .4; pointer-events: none; }",
+      ".geoduels-hotkeys-site-card > * { position: relative; z-index: 1; }",
+      ".geoduels-hotkeys-site-hero { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px; padding: 22px; border-bottom: 1px solid rgba(255,255,255,.08); background: linear-gradient(90deg, rgba(47,136,95,.22), rgba(70,105,150,.12)); }",
+      ".geoduels-hotkeys-site-title { margin: 0; color: #f8fbff; font-size: 28px; line-height: 1; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }",
+      ".geoduels-hotkeys-site-subtitle { margin: 7px 0 0; max-width: 640px; color: rgba(220,236,248,.72); font-size: 13px; line-height: 1.45; }",
+      ".geoduels-hotkeys-site-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }",
+      ".geoduels-hotkeys-site-button { min-height: 36px; padding: 0 14px; border: 1px solid rgba(255,255,255,.14); border-radius: 9px; background: rgba(255,255,255,.08); color: #edf7ff; font: inherit; font-weight: 800; cursor: pointer; }",
+      ".geoduels-hotkeys-site-button:hover { background: rgba(255,255,255,.14); }",
+      ".geoduels-hotkeys-site-button[data-variant='primary'] { background: linear-gradient(180deg, rgba(53,182,126,.95), rgba(28,139,90,.95)); color: #f7fff9; }",
+      ".geoduels-hotkeys-site-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 18px; }",
+      ".geoduels-hotkeys-site-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid rgba(255,255,255,.09); border-radius: 14px; background: rgba(255,255,255,.045); }",
+      ".geoduels-hotkeys-site-strip strong { color: #f5faff; font-size: 13px; letter-spacing: .09em; text-transform: uppercase; }",
+      ".geoduels-hotkeys-site-strip span { display: block; margin-top: 4px; color: rgba(216,234,248,.66); font-size: 12px; }",
+      ".geoduels-hotkeys-site-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }",
+      ".geoduels-hotkeys-site-row { display: grid; grid-template-columns: minmax(0, 1fr) 126px 64px; gap: 9px; align-items: center; min-height: 74px; padding: 12px; border: 1px solid rgba(255,255,255,.09); border-radius: 14px; background: rgba(255,255,255,.05); }",
+      ".geoduels-hotkeys-site-row .geoduels-hotkeys-label b { font-size: 14px; }",
+      ".geoduels-hotkeys-site-row .geoduels-hotkeys-label small { margin-top: 4px; }",
+      "@media (max-width: 860px) { .geoduels-hotkeys-site-tab { top: 36px; min-width: 120px; transform: translateX(-60px) scale(.92); } .geoduels-hotkeys-site-tab[data-active='true'] { transform: translateX(-60px) scale(.98); } .geoduels-hotkeys-site-panel { margin-top: 36px; } .geoduels-hotkeys-site-grid { grid-template-columns: 1fr; } .geoduels-hotkeys-site-row { grid-template-columns: minmax(0, 1fr) 112px 58px; } .geoduels-hotkeys-site-title { font-size: 23px; } }"
     ].join("\n");
     document.head.appendChild(style);
+  }
+
+  function queueIntegratedTabSync() {
+    if (integratedSyncTimer) return;
+    integratedSyncTimer = window.setTimeout(function () {
+      integratedSyncTimer = 0;
+      syncIntegratedHotkeysTab();
+    }, 120);
+  }
+
+  function syncIntegratedHotkeysTab() {
+    if (!document.body) return;
+
+    var root = document.getElementById(ROOT_ID);
+    var container = launcherHiddenForGame ? null : findLobbyTabContainer();
+    if (!container) {
+      clearIntegratedLobbyState();
+      if (root) root.setAttribute("data-integrated-available", "false");
+      return;
+    }
+
+    container.classList.add("geoduels-hotkeys-tabs-expanded");
+    bindNativeLobbyTabs(container);
+
+    var tab = ensureIntegratedTabButton(container);
+    tab.setAttribute("data-active", integratedTabActive ? "true" : "false");
+    if (root) root.setAttribute("data-integrated-available", "true");
+
+    var main = findLobbyContentMain();
+    if (!main) return;
+
+    if (integratedTabActive) {
+      var panel = ensureIntegratedHotkeysPanel();
+      if (panel.parentElement !== main) {
+        main.insertBefore(panel, main.firstChild);
+      }
+      panel.hidden = false;
+      hideNativeLobbyPanels(main);
+    } else {
+      var existingPanel = document.getElementById(INTEGRATED_PANEL_ID);
+      if (existingPanel) existingPanel.hidden = true;
+      restoreNativeLobbyPanels();
+    }
+  }
+
+  function clearIntegratedLobbyState() {
+    var tab = document.getElementById(INTEGRATED_TAB_ID);
+    var panel = document.getElementById(INTEGRATED_PANEL_ID);
+    Array.prototype.slice.call(document.querySelectorAll(".geoduels-hotkeys-tabs-expanded")).forEach(function (container) {
+      container.classList.remove("geoduels-hotkeys-tabs-expanded");
+    });
+    if (tab && tab.parentElement) tab.parentElement.removeChild(tab);
+    if (panel && panel.parentElement) panel.parentElement.removeChild(panel);
+    restoreNativeLobbyPanels();
+    integratedTabActive = false;
+    document.documentElement.classList.remove("geoduels-hotkeys-integrated-active");
+  }
+
+  function findLobbyTabContainer() {
+    var wanted = { friends: true, play: true, top: true };
+    var buttons = Array.prototype.slice.call(document.querySelectorAll("button")).filter(function (button) {
+      return button.id !== INTEGRATED_TAB_ID && !!wanted[compactText(button.textContent)];
+    });
+
+    for (var i = 0; i < buttons.length; i += 1) {
+      var parent = buttons[i].parentElement;
+      if (!parent) continue;
+      var labels = {};
+      buttons.forEach(function (button) {
+        if (button.parentElement === parent) labels[compactText(button.textContent)] = true;
+      });
+      if (labels.friends && labels.play && labels.top) return parent;
+    }
+    return null;
+  }
+
+  function bindNativeLobbyTabs(container) {
+    Array.prototype.slice.call(container.querySelectorAll("button")).forEach(function (button) {
+      var label = compactText(button.textContent);
+      if (button.id === INTEGRATED_TAB_ID || (label !== "friends" && label !== "play" && label !== "top")) return;
+      if (button.dataset.geoduelsHotkeysNativeTabBound === "true") return;
+      button.dataset.geoduelsHotkeysNativeTabBound = "true";
+      button.addEventListener(
+        "click",
+        function () {
+          if (integratedTabActive) setIntegratedTabActive(false, true);
+        },
+        true
+      );
+    });
+  }
+
+  function ensureIntegratedTabButton(container) {
+    var button = document.getElementById(INTEGRATED_TAB_ID);
+    if (!button) {
+      button = document.createElement("button");
+      button.id = INTEGRATED_TAB_ID;
+      button.type = "button";
+      button.className = "geoduels-hotkeys-site-tab";
+      button.textContent = "KEYBINDS";
+      button.title = "GeoDuels hotkeys";
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        setIntegratedTabActive(true);
+      });
+    }
+    if (button.parentElement !== container) container.appendChild(button);
+    return button;
+  }
+
+  function findLobbyContentMain() {
+    var mains = Array.prototype.slice.call(document.querySelectorAll("main"));
+    return (
+      mains.find(function (main) {
+        var className = String(main.className || "");
+        var text = compactText(main.textContent);
+        return (
+          className.indexOf("pointer-events-none") !== -1 &&
+          (text.indexOf("singleplayer") !== -1 ||
+            text.indexOf("ranked players") !== -1 ||
+            text.indexOf("private lobby") !== -1)
+        );
+      }) || null
+    );
+  }
+
+  function hideNativeLobbyPanels(main) {
+    Array.prototype.slice.call(main.children).forEach(function (child) {
+      if (child.id === INTEGRATED_PANEL_ID || !isNativeLobbyPanel(child)) return;
+      if (child.dataset.geoduelsHotkeysNativeHidden !== "true") {
+        child.dataset.geoduelsHotkeysNativeDisplay = child.style.display || "";
+      }
+      child.dataset.geoduelsHotkeysNativeHidden = "true";
+      child.style.display = "none";
+    });
+  }
+
+  function restoreNativeLobbyPanels() {
+    Array.prototype.slice.call(document.querySelectorAll("[data-geoduels-hotkeys-native-hidden='true']")).forEach(function (element) {
+      element.style.display = element.dataset.geoduelsHotkeysNativeDisplay || "";
+      delete element.dataset.geoduelsHotkeysNativeHidden;
+      delete element.dataset.geoduelsHotkeysNativeDisplay;
+    });
+  }
+
+  function isNativeLobbyPanel(element) {
+    var text = compactText(element.textContent);
+    if (!text) return false;
+    if (element.getAttribute("aria-labelledby") === "geoduels-seo-heading") return false;
+    if (text.indexOf("tutorial") !== -1 && text.indexOf("geoduels") !== -1) return false;
+    if (text.indexOf("singleplayer") !== -1 && text.indexOf("ranked") !== -1) return true;
+    if (text.indexOf("ranked players") !== -1 || text.indexOf("loading leaderboard") !== -1) return true;
+    if (text.indexOf("private lobby") !== -1 || text.indexOf("create private lobby") !== -1) return true;
+    return false;
+  }
+
+  function setIntegratedTabActive(active, silent) {
+    var next = !!active && !launcherHiddenForGame && !!findLobbyTabContainer();
+    integratedTabActive = next;
+    document.documentElement.classList.toggle("geoduels-hotkeys-integrated-active", integratedTabActive);
+    if (integratedTabActive && settings.panelOpen) {
+      settings.panelOpen = false;
+      saveSettings();
+    }
+    syncIntegratedHotkeysTab();
+    refreshPanel();
+    if (!silent) showToast(integratedTabActive ? "Keybinds open" : "Keybinds closed");
+  }
+
+  function ensureIntegratedHotkeysPanel() {
+    var panel = document.getElementById(INTEGRATED_PANEL_ID);
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = INTEGRATED_PANEL_ID;
+      panel.className = "geoduels-hotkeys-site-panel";
+      renderIntegratedHotkeysPanel(panel);
+    }
+    return panel;
+  }
+
+  function renderIntegratedHotkeysPanel(panel) {
+    panel.innerHTML = "";
+
+    var card = document.createElement("div");
+    card.className = "geoduels-hotkeys-site-card";
+
+    var hero = document.createElement("div");
+    hero.className = "geoduels-hotkeys-site-hero";
+    var titleWrap = document.createElement("div");
+    var title = document.createElement("h2");
+    title.className = "geoduels-hotkeys-site-title";
+    title.textContent = "KEYBINDS";
+    var subtitle = document.createElement("p");
+    subtitle.className = "geoduels-hotkeys-site-subtitle";
+    subtitle.textContent = "Local shortcuts for the map, chat, sound, lobby tools, queue buttons, and match controls.";
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(subtitle);
+
+    var heroActions = document.createElement("div");
+    heroActions.className = "geoduels-hotkeys-site-actions";
+    var muteButton = createSiteButton("", "primary");
+    muteButton.setAttribute("data-role", "mute-toggle");
+    muteButton.addEventListener("click", toggleMute);
+    var resetButton = createSiteButton("Reset Defaults", "");
+    resetButton.addEventListener("click", function () {
+      settings.bindings = cloneBindings(DEFAULT_SETTINGS.bindings);
+      saveSettings();
+      refreshPanel();
+      showToast("Hotkeys reset");
+    });
+    var closeButton = createSiteButton("Back", "");
+    closeButton.addEventListener("click", function () {
+      setIntegratedTabActive(false);
+    });
+    heroActions.appendChild(muteButton);
+    heroActions.appendChild(resetButton);
+    heroActions.appendChild(closeButton);
+    hero.appendChild(titleWrap);
+    hero.appendChild(heroActions);
+    card.appendChild(hero);
+
+    var body = document.createElement("div");
+    body.className = "geoduels-hotkeys-site-body";
+    body.appendChild(createIntegratedArtStrip());
+
+    var grid = document.createElement("div");
+    grid.className = "geoduels-hotkeys-site-grid";
+    ACTIONS.forEach(function (action) {
+      grid.appendChild(createIntegratedActionRow(action));
+    });
+    body.appendChild(grid);
+    card.appendChild(body);
+    panel.appendChild(card);
+  }
+
+  function createIntegratedArtStrip() {
+    var strip = document.createElement("div");
+    strip.className = "geoduels-hotkeys-site-strip";
+
+    var copy = document.createElement("div");
+    var title = document.createElement("strong");
+    title.textContent = "Launcher Art";
+    var note = document.createElement("span");
+    note.textContent = "Used by the draggable fallback bubble and the subtle menu backdrop.";
+    copy.appendChild(title);
+    copy.appendChild(note);
+
+    var actions = document.createElement("div");
+    actions.className = "geoduels-hotkeys-site-actions";
+    var fileInput = document.createElement("input");
+    fileInput.className = "geoduels-hotkeys-file-input";
+    fileInput.type = "file";
+    fileInput.accept = "image/png,image/jpeg,image/webp,image/gif";
+    fileInput.addEventListener("change", function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (file) setBallImageFromFile(file);
+      fileInput.value = "";
+    });
+    var chooseImage = createSiteButton("Set Image", "primary");
+    chooseImage.addEventListener("click", function () {
+      fileInput.click();
+    });
+    var resetImage = createSiteButton("Reset Image", "");
+    resetImage.addEventListener("click", function () {
+      settings.ballImageUrl = BUILTIN_ART_DATA_URL;
+      saveSettings();
+      refreshPanel();
+      showToast("Ball image reset");
+    });
+    actions.appendChild(fileInput);
+    actions.appendChild(chooseImage);
+    actions.appendChild(resetImage);
+
+    strip.appendChild(copy);
+    strip.appendChild(actions);
+    return strip;
+  }
+
+  function createIntegratedActionRow(action) {
+    var row = createActionRow(action);
+    row.classList.add("geoduels-hotkeys-site-row");
+    return row;
+  }
+
+  function createSiteButton(label, variant) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "geoduels-hotkeys-site-button";
+    if (variant) button.setAttribute("data-variant", variant);
+    button.textContent = label;
+    return button;
   }
 
   function ensurePanel() {
@@ -681,7 +1059,7 @@
     var titlebar = document.createElement("div");
     titlebar.className = "geoduels-hotkeys-titlebar";
     var titleText = document.createElement("span");
-    titleText.textContent = "geo hotkeys thing";
+    titleText.textContent = "KEYBINDS";
     var closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.className = "geoduels-hotkeys-window-button";
@@ -701,10 +1079,10 @@
     imageGroup.className = "geoduels-hotkeys-group";
     var imageTitle = document.createElement("div");
     imageTitle.className = "geoduels-hotkeys-group-title";
-    imageTitle.textContent = "ball pic stuff";
+    imageTitle.textContent = "Launcher Art";
     var imageNote = document.createElement("div");
     imageNote.className = "geoduels-hotkeys-note";
-    imageNote.textContent = "drag the ball around. click it. image goes here.";
+    imageNote.textContent = "The draggable fallback bubble uses this image and hides while a live match is active.";
     var imageRow = document.createElement("div");
     imageRow.className = "geoduels-hotkeys-image-row";
     var fileInput = document.createElement("input");
@@ -720,14 +1098,14 @@
     var chooseImage = document.createElement("button");
     chooseImage.type = "button";
     chooseImage.className = "geoduels-hotkeys-file-button";
-    chooseImage.textContent = "pick pic";
+    chooseImage.textContent = "Set Image";
     chooseImage.addEventListener("click", function () {
       fileInput.click();
     });
     var clearImage = document.createElement("button");
     clearImage.type = "button";
     clearImage.className = "geoduels-hotkeys-file-button";
-    clearImage.textContent = "reset pic";
+    clearImage.textContent = "Reset Image";
     clearImage.addEventListener("click", function () {
       settings.ballImageUrl = BUILTIN_ART_DATA_URL;
       saveSettings();
@@ -747,10 +1125,10 @@
     var actionTitle = document.createElement("div");
     actionTitle.className = "geoduels-hotkeys-group-title";
     var actionTitleText = document.createElement("span");
-    actionTitleText.textContent = "keys";
+    actionTitleText.textContent = "Keybinds";
     var actionTitleNote = document.createElement("span");
     actionTitleNote.className = "geoduels-hotkeys-note";
-    actionTitleNote.textContent = "click blue button then press key";
+    actionTitleNote.textContent = "Pick a bind, then press a key combo. Escape cancels, Backspace clears.";
     actionTitle.appendChild(actionTitleText);
     actionTitle.appendChild(actionTitleNote);
     actionGroup.appendChild(actionTitle);
@@ -771,7 +1149,7 @@
     var resetButton = document.createElement("button");
     resetButton.type = "button";
     resetButton.className = "geoduels-hotkeys-reset";
-    resetButton.textContent = "reset keys";
+    resetButton.textContent = "Reset Defaults";
     resetButton.addEventListener("click", function () {
       settings.bindings = cloneBindings(DEFAULT_SETTINGS.bindings);
       saveSettings();
@@ -788,7 +1166,7 @@
     button.type = "button";
     button.className = "geoduels-hotkeys-ball";
     button.title = "GeoDuels hotkeys";
-    button.innerHTML = '<span class="geoduels-hotkeys-ball-image" aria-hidden="true"></span><span class="geoduels-hotkeys-ball-label">keys</span>';
+    button.innerHTML = '<span class="geoduels-hotkeys-ball-image" aria-hidden="true"></span><span class="geoduels-hotkeys-ball-label">KB</span>';
     button.addEventListener("pointerdown", beginBallDrag);
     button.addEventListener("click", function (event) {
       if (suppressBallClick) {
@@ -839,7 +1217,7 @@
     var clear = document.createElement("button");
     clear.type = "button";
     clear.className = "geoduels-hotkeys-clear";
-    clear.textContent = "no";
+    clear.textContent = "Clear";
     clear.addEventListener("click", function () {
       setBinding(action.id, "");
     });
@@ -857,6 +1235,7 @@
     var panel = root.querySelector(".geoduels-hotkeys-panel");
     var button = root.querySelector(".geoduels-hotkeys-ball");
     root.setAttribute("data-game-hidden", launcherHiddenForGame ? "true" : "false");
+    root.setAttribute("data-integrated-available", document.getElementById(INTEGRATED_TAB_ID) ? "true" : "false");
     if (panel) panel.hidden = launcherHiddenForGame || !settings.panelOpen;
     if (button) button.setAttribute("data-active", settings.panelOpen ? "true" : "false");
     if (button) {
@@ -864,23 +1243,26 @@
       if (ballImageUrl) {
         button.style.setProperty("--geoduels-hotkeys-ball-image", "url(\"" + cssEscapeUrl(ballImageUrl) + "\")");
         root.style.setProperty("--geoduels-hotkeys-menu-image", "url(\"" + cssEscapeUrl(ballImageUrl) + "\")");
+        document.documentElement.style.setProperty("--geoduels-hotkeys-menu-image", "url(\"" + cssEscapeUrl(ballImageUrl) + "\")");
       } else {
         button.style.removeProperty("--geoduels-hotkeys-ball-image");
         root.style.removeProperty("--geoduels-hotkeys-menu-image");
+        document.documentElement.style.removeProperty("--geoduels-hotkeys-menu-image");
       }
     }
 
     ACTIONS.forEach(function (action) {
-      var row = root.querySelector("[data-action-id='" + action.id + "']");
-      if (!row) return;
-      var bind = row.querySelector("[data-role='bind']");
-      if (!bind) return;
-      bind.textContent = recordingActionId === action.id ? "press key..." : comboLabel(settings.bindings[action.id]);
-      bind.setAttribute("data-recording", recordingActionId === action.id ? "true" : "false");
+      Array.prototype.slice.call(document.querySelectorAll("[data-action-id='" + action.id + "']")).forEach(function (row) {
+        var bind = row.querySelector("[data-role='bind']");
+        if (!bind) return;
+        bind.textContent = recordingActionId === action.id ? "Press keys..." : comboLabel(settings.bindings[action.id]);
+        bind.setAttribute("data-recording", recordingActionId === action.id ? "true" : "false");
+      });
     });
 
-    var muteButton = root.querySelector("[data-role='mute-toggle']");
-    if (muteButton) muteButton.textContent = settings.muted ? "muted" : "sound ok";
+    Array.prototype.slice.call(document.querySelectorAll("[data-role='mute-toggle']")).forEach(function (muteButton) {
+      muteButton.textContent = settings.muted ? "Sound Muted" : "Sound On";
+    });
   }
 
   function cssEscapeUrl(value) {
@@ -959,7 +1341,15 @@
   }
 
   function handlePasteImage(event) {
-    if (!settings.panelOpen && !(event.target && event.target.closest && event.target.closest("#" + ROOT_ID))) {
+    if (
+      !settings.panelOpen &&
+      !integratedTabActive &&
+      !(
+        event.target &&
+        event.target.closest &&
+        (event.target.closest("#" + ROOT_ID) || event.target.closest("#" + INTEGRATED_PANEL_ID))
+      )
+    ) {
       return;
     }
     var items = event.clipboardData && event.clipboardData.items;
@@ -1031,11 +1421,16 @@
   }
 
   function togglePanel() {
+    if (!launcherHiddenForGame && findLobbyTabContainer()) {
+      setIntegratedTabActive(!integratedTabActive);
+      return;
+    }
     setPanelOpen(!settings.panelOpen);
   }
 
   function setPanelOpen(open, silent) {
     if (launcherHiddenForGame && open) open = false;
+    if (open && integratedTabActive) setIntegratedTabActive(false, true);
     settings.panelOpen = !!open;
     saveSettings();
     refreshPanel();
